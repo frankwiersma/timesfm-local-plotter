@@ -1,0 +1,11 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# local editor / tooling config
+.claude/
+.vscode/
+.idea/
+
+.DS_Store

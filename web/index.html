@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TimesFM 3.0 — local plotter</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#EEF1EA; --panel:#E5EAE1; --sink:#DCE3D8;
+  --grid:#C3D0C1; --grid-fine:#DCE3D7;
+  --ink:#151B16; --ink-2:#5C6A5E; --ink-3:#8A968B;
+  --rule:#BDC9BB;
+  --trace:#10405E;      /* observed history — petrol pen */
+  --pen:#8A2E7B;        /* forecast — magenta pen */
+  --actual:#B35A00;     /* held-out truth — amber pen */
+  --ok:#3C6B4A; --bad:#9E2B25;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,sans-serif;
+  --cond:"IBM Plex Sans Condensed","IBM Plex Sans",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--paper); color:var(--ink); font-family:var(--sans);
+  font-size:14px; line-height:1.45; -webkit-font-smoothing:antialiased;
+}
+.label{font-family:var(--cond); text-transform:uppercase; letter-spacing:.10em; font-weight:600; font-size:10.5px; color:var(--ink-2)}
+.num{font-family:var(--mono); font-variant-numeric:tabular-nums}
+button,input,select{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--pen); outline-offset:2px}
+
+/* ---------- shell ---------- */
+.app{display:grid; grid-template-columns:290px minmax(0,1fr); height:100vh; overflow:hidden}
+.rail{background:var(--panel); border-right:1px solid var(--rule); display:flex; flex-direction:column; min-height:0; overflow:hidden}
+.main{display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden}
+
+/* ---------- masthead ---------- */
+.brand{padding:18px 18px 14px; border-bottom:1px solid var(--rule)}
+.brand h1{
+  margin:0; font-family:var(--mono); font-weight:600; font-size:19px;
+  letter-spacing:-.035em; line-height:1.05;
+}
+.brand h1 em{font-style:normal; color:var(--pen)}
+.brand p{margin:6px 0 0; font-size:11.5px; color:var(--ink-2); line-height:1.4}
+
+.topbar{
+  display:flex; align-items:center; gap:18px; flex-wrap:wrap;
+  padding:11px 22px; border-bottom:1px solid var(--rule); background:var(--panel);
+}
+.lamp{display:flex; align-items:center; gap:8px}
+.lamp .dot{width:8px;height:8px;border-radius:50%;background:var(--ink-3); flex:none}
+.lamp.ready .dot{background:var(--ok)}
+.lamp.loading .dot{background:var(--actual); animation:pulse 1.1s ease-in-out infinite}
+.lamp.error .dot{background:var(--bad)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+.spec{display:flex; gap:16px; flex-wrap:wrap; margin-left:auto}
+.spec b{font-family:var(--mono); font-weight:500; color:var(--ink)}
+.spec span{font-family:var(--cond); text-transform:uppercase; letter-spacing:.09em; font-size:10px; color:var(--ink-3); margin-right:5px}
+
+/* ---------- channel list ---------- */
+.rail-scroll{overflow-y:auto; flex:1; min-height:0}
+.sect{padding:14px 18px 4px}
+.chan{
+  display:block; width:100%; text-align:left; background:none; border:0; cursor:pointer;
+  padding:9px 18px; border-left:3px solid transparent; border-bottom:1px solid var(--rule);
+}
+.chan:hover{background:var(--sink)}
+.chan[aria-pressed="true"]{background:var(--paper); border-left-color:var(--pen)}
+.chan-top{display:flex; align-items:baseline; gap:8px}
+.chan-name{font-weight:500; font-size:13.5px; letter-spacing:-.01em}
+.chan[aria-pressed="true"] .chan-name{color:var(--pen)}
+.tag{
+  font-family:var(--cond); text-transform:uppercase; letter-spacing:.09em; font-size:9px;
+  padding:1px 4px; border:1px solid var(--ink-3); color:var(--ink-2); flex:none; line-height:1.5;
+}
+.tag.real{background:var(--trace); border-color:var(--trace); color:var(--paper)}
+.chan-meta{display:flex; align-items:center; gap:8px; margin-top:4px}
+.chan-meta .num{font-size:10.5px; color:var(--ink-3)}
+/* difficulty encodes how forecastable the series actually is */
+.diff{display:flex; gap:2px; margin-left:auto}
+.diff i{width:8px;height:3px;background:var(--grid);display:block}
+.diff i.on{background:var(--ink-2)}
+.diff i.on.max{background:var(--bad)}
+
+/* ---------- controls ---------- */
+.ctrls{border-top:1px solid var(--rule); padding:14px 18px 16px; background:var(--panel)}
+.field{margin-bottom:13px}
+.field-top{display:flex; justify-content:space-between; align-items:baseline; margin-bottom:5px}
+.field-top output{font-family:var(--mono); font-size:12px; font-weight:500}
+input[type=range]{width:100%; -webkit-appearance:none; appearance:none; background:none; height:16px; cursor:pointer}
+input[type=range]::-webkit-slider-runnable-track{height:2px; background:var(--grid)}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none; width:12px; height:12px; background:var(--pen);
+  border-radius:50%; margin-top:-5px;
+}
+input[type=range]::-moz-range-track{height:2px;background:var(--grid)}
+input[type=range]::-moz-range-thumb{width:12px;height:12px;background:var(--pen);border:0;border-radius:50%}
+.check{display:flex; align-items:center; gap:8px; padding:4px 0; cursor:pointer; font-size:12.5px}
+.check input{accent-color:var(--pen); width:14px; height:14px; cursor:pointer}
+.seg{display:flex; border:1px solid var(--rule)}
+.seg button{
+  flex:1; background:var(--paper); border:0; padding:5px; cursor:pointer;
+  font-family:var(--mono); font-size:11px; color:var(--ink-2);
+}
+.seg button + button{border-left:1px solid var(--rule)}
+.seg button[aria-pressed="true"]{background:var(--trace); color:var(--paper)}
+.run{
+  width:100%; margin-top:4px; padding:11px; background:var(--pen); color:var(--paper);
+  border:0; cursor:pointer; font-family:var(--cond); text-transform:uppercase;
+  letter-spacing:.14em; font-weight:600; font-size:12px;
+}
+.run:hover{background:#732565}
+.run:disabled{background:var(--ink-3); cursor:not-allowed}
+.pair{display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:8px}
+.pair .btn{padding:7px 4px; font-size:12px; text-align:center}
+
+/* ---------- chart ---------- */
+.stage{flex:1; padding:18px 22px 0; min-height:0; display:flex; flex-direction:column; overflow:hidden}
+.stage-head{display:flex; align-items:flex-start; gap:18px; margin-bottom:12px}
+.stage-head h2{margin:0; font-size:17px; font-weight:600; letter-spacing:-.02em}
+.stage-head p{margin:4px 0 0; font-size:12.5px; color:var(--ink-2); max-width:62ch}
+.legend{display:flex; gap:14px; flex-wrap:wrap; margin-left:auto; flex:none; padding-top:2px}
+.legend div{display:flex; align-items:center; gap:6px}
+.legend s{width:16px; height:0; border-top:2px solid; text-decoration:none; flex:none}
+.chartwrap{position:relative; flex:1; min-height:260px; border:1px solid var(--rule); background:#fff}
+svg{display:block; width:100%; height:100%}
+.tip{
+  position:absolute; pointer-events:none; background:var(--ink); color:var(--paper);
+  padding:6px 8px; font-family:var(--mono); font-size:11px; line-height:1.5;
+  opacity:0; transition:opacity .1s; white-space:nowrap; z-index:5;
+}
+.tip.on{opacity:1}
+.tip b{font-weight:500; color:#fff}
+
+/* ---------- readout ---------- */
+.readout{display:grid; grid-template-columns:repeat(6,1fr); border:1px solid var(--rule); border-top:0}
+.cell{padding:9px 12px; border-left:1px solid var(--rule); background:var(--panel)}
+.cell:first-child{border-left:0}
+.cell .v{font-family:var(--mono); font-size:17px; font-weight:500; letter-spacing:-.02em; line-height:1.2}
+.cell .v small{font-size:11px; color:var(--ink-2); font-weight:400}
+.cell .k{margin-top:2px}
+.cell .n{font-size:10px; color:var(--ink-3); margin-top:1px; font-family:var(--mono)}
+.v.good{color:var(--ok)} .v.poor{color:var(--bad)}
+.foot{padding:11px 22px 16px; font-size:11.5px; color:var(--ink-3); display:flex; gap:20px; flex-wrap:wrap}
+.foot code{font-family:var(--mono); color:var(--ink-2)}
+
+dialog{border:1px solid var(--ink); background:var(--paper); padding:0; max-width:560px; width:92vw; color:var(--ink)}
+dialog::backdrop{background:rgba(21,27,22,.4)}
+.dlg-h{padding:14px 18px; border-bottom:1px solid var(--rule); display:flex; justify-content:space-between; align-items:center}
+.dlg-h h3{margin:0; font-size:14px; font-weight:600}
+.dlg-b{padding:16px 18px}
+textarea{
+  width:100%; height:150px; font-family:var(--mono); font-size:12px; padding:9px;
+  border:1px solid var(--rule); background:#fff; resize:vertical;
+}
+.btn{background:var(--paper); border:1px solid var(--ink); padding:7px 14px; cursor:pointer; font-size:12.5px}
+.btn:hover{background:var(--sink)}
+.btn.pri{background:var(--pen); color:var(--paper); border-color:var(--pen)}
+.bench{width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12px; margin-top:10px}
+.bench th{text-align:left; font-family:var(--cond); text-transform:uppercase; letter-spacing:.09em; font-size:10px; color:var(--ink-2); padding:5px 8px; border-bottom:1px solid var(--rule)}
+.bench td{padding:5px 8px; border-bottom:1px solid var(--grid-fine)}
+.err{color:var(--bad); font-size:12.5px; padding:8px 0}
+
+@media (max-width:900px){
+  .app{grid-template-columns:1fr; height:auto; overflow:visible}
+  .rail,.main,.stage{overflow:visible}
+  .chartwrap{height:340px}
+  .rail{border-right:0; border-bottom:1px solid var(--rule)}
+  .readout{grid-template-columns:repeat(3,1fr)}
+  .cell:nth-child(4){border-left:0}
+  .legend{margin-left:0; width:100%}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important; transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="brand">
+      <h1>TimesFM <em>3.0</em><br>local plotter</h1>
+      <p>330M-parameter forecaster, running on this Mac. Pick a channel, set a horizon, and see where it holds up.</p>
+    </div>
+    <div class="rail-scroll">
+      <div class="sect"><span class="label">Channels</span></div>
+      <div id="chans"></div>
+    </div>
+    <div class="ctrls">
+      <div class="field">
+        <div class="field-top"><span class="label">Horizon</span><output id="h-out" class="num">96</output></div>
+        <input type="range" id="h" min="8" max="512" step="8" value="96">
+      </div>
+      <div class="field">
+        <div class="field-top"><span class="label">Context</span><output id="c-out" class="num">512</output></div>
+        <input type="range" id="c" min="64" max="4096" step="64" value="512">
+      </div>
+      <div class="field">
+        <div class="field-top"><span class="label">Device</span></div>
+        <div class="seg" id="dev"><button data-d="mps" aria-pressed="true">MPS</button><button data-d="cpu" aria-pressed="false">CPU</button></div>
+      </div>
+      <label class="check"><input type="checkbox" id="bt" checked> Hold out the horizon and score it</label>
+      <label class="check"><input type="checkbox" id="bl" checked> Show seasonal-naive baseline</label>
+      <button class="run" id="run" disabled>Loading model…</button>
+      <div class="pair">
+        <button class="btn" id="paste-open">Your own series</button>
+        <button class="btn" id="bench-open">Benchmark</button>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div class="lamp loading" id="lamp"><span class="dot"></span><span class="label" id="lamp-t">Loading checkpoint</span></div>
+      <div class="spec" id="spec"></div>
+    </div>
+    <div class="stage">
+      <div class="stage-head">
+        <div>
+          <h2 id="title">National grid load</h2>
+          <p id="blurb"></p>
+        </div>
+        <div class="legend">
+          <div><s style="border-color:var(--trace)"></s><span class="label">Observed</span></div>
+          <div><s style="border-color:var(--pen)"></s><span class="label">Forecast</span></div>
+          <div><s style="border-color:var(--actual);border-top-style:dashed"></s><span class="label">Held out</span></div>
+          <div><s style="border-color:var(--ink-3);border-top-style:dotted"></s><span class="label">Naive</span></div>
+        </div>
+      </div>
+      <div class="chartwrap" id="wrap">
+        <svg id="svg"></svg>
+        <div class="tip" id="tip"></div>
+      </div>
+      <div class="readout" id="readout"></div>
+      <div class="foot" id="foot"></div>
+    </div>
+  </main>
+</div>
+
+<dialog id="paste-dlg">
+  <div class="dlg-h"><h3>Paste your own series</h3><button class="btn" data-close>Close</button></div>
+  <div class="dlg-b">
+    <p style="margin:0 0 10px;font-size:12.5px;color:var(--ink-2)">One number per line, or comma-separated. Values only — no timestamps or header row.</p>
+    <textarea id="paste-ta" placeholder="120.4&#10;118.9&#10;131.2&#10;…"></textarea>
+    <div id="paste-err" class="err"></div>
+    <button class="btn pri" id="paste-go" style="margin-top:8px">Forecast this series</button>
+  </div>
+</dialog>
+
+<dialog id="bench-dlg">
+  <div class="dlg-h"><h3>Inference latency on this Mac</h3><button class="btn" data-close>Close</button></div>
+  <div class="dlg-b">
+    <p style="margin:0 0 10px;font-size:12.5px;color:var(--ink-2)">Median of three runs per context length, forecasting 128 steps ahead. Both devices, back to back.</p>
+    <button class="btn pri" id="bench-go">Run benchmark</button>
+    <div id="bench-out"></div>
+  </div>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const fmt = (v, d=2) => v==null || !isFinite(v) ? "—" :
+  Math.abs(v) >= 10000 ? v.toLocaleString(undefined,{maximumFractionDigits:0})
+  : v.toLocaleString(undefined,{minimumFractionDigits:d, maximumFractionDigits:d});
+
+const state = {series:[], sel:null, meta:{}, res:null, custom:null, device:"mps"};
+
+/* ---------------- boot ---------------- */
+async function poll(){
+  try{
+    const m = await (await fetch("/api/meta")).json();
+    state.meta = m;
+    const lamp = $("#lamp"), t = $("#lamp-t");
+    lamp.className = "lamp " + m.status;
+    if(m.status === "ready"){
+      t.textContent = `Ready · loaded in ${m.load_seconds}s`;
+      $("#run").disabled = false; $("#run").textContent = "Run forecast";
+      $("#spec").innerHTML = [
+        ["params", m.params_m + "M"], ["precision", m.dtype],
+        ["max context", m.max_context.toLocaleString()],
+        ["patch", m.input_patch_len + "→" + m.output_patch_len],
+        ["torch", m.torch.split("+")[0]],
+      ].map(([k,v]) => `<div><span>${k}</span><b>${v}</b></div>`).join("");
+      $("#foot").innerHTML = `<span>Checkpoint <code>${m.checkpoint}</code></span>
+        <span>Quantiles <code>p10 … p90</code></span>
+        <span>MPS available <code>${m.mps_available}</code></span>`;
+      if(!state.res) run();
+      return;
+    }
+    if(m.status === "error"){ t.textContent = "Load failed — " + m.detail; return; }
+    t.textContent = "Loading checkpoint…";
+  }catch(e){ $("#lamp-t").textContent = "Server unreachable"; }
+  setTimeout(poll, 700);
+}
+
+async function boot(){
+  state.series = await (await fetch("/api/datasets")).json();
+  const rank = {easy:1, medium:2, hard:3, brutal:4, impossible:5};
+  $("#chans").innerHTML = state.series.map(s => {
+    const lv = rank[s.difficulty] || 1;
+    const bars = [1,2,3,4,5].map(i =>
+      `<i class="${i<=lv?"on":""} ${lv>=4&&i<=lv?"max":""}"></i>`).join("");
+    return `<button class="chan" data-id="${s.id}" aria-pressed="false">
+      <div class="chan-top"><span class="chan-name">${s.name}</span>
+        <span class="tag ${s.real?"real":""}">${s.real?"real":"synthetic"}</span></div>
+      <div class="chan-meta"><span class="num">${s.n.toLocaleString()} × ${s.freq}</span>
+        <span class="diff" title="forecast difficulty: ${s.difficulty}">${bars}</span></div>
+    </button>`;
+  }).join("");
+  $("#chans").addEventListener("click", e => {
+    const b = e.target.closest(".chan"); if(!b) return;
+    select(b.dataset.id); run();
+  });
+  select(state.series[0].id);
+  poll();
+}
+
+function select(id){
+  state.sel = id; state.custom = null;
+  const s = state.series.find(x => x.id === id);
+  document.querySelectorAll(".chan").forEach(c =>
+    c.setAttribute("aria-pressed", String(c.dataset.id === id)));
+  $("#title").textContent = s.name;
+  $("#blurb").textContent = s.blurb;
+  clampControls(s.n);
+}
+
+/* Keep horizon and context inside what the chosen series can actually supply:
+   a hold-out needs history left over, and history caps the usable context. */
+function clampControls(n){
+  const h = $("#h"), c = $("#c");
+  h.max = Math.max(8, Math.min(512, Math.floor(n / 3 / 8) * 8));
+  if(+h.value > +h.max){ h.value = h.max; $("#h-out").textContent = h.value; }
+  c.max = Math.max(64, Math.min(4096, Math.floor((n - +h.value) / 64) * 64));
+  if(+c.value > +c.max){ c.value = c.max; $("#c-out").textContent = c.value; }
+}
+
+/* ---------------- forecast ---------------- */
+async function run(){
+  if($("#run").disabled) return;
+  const btn = $("#run"); btn.disabled = true; btn.textContent = "Forecasting…";
+  const body = {
+    horizon:+$("#h").value, context:+$("#c").value,
+    backtest:$("#bt").checked, device:state.device,
+  };
+  if(state.custom) body.values = state.custom; else body.series_id = state.sel;
+  try{
+    const r = await fetch("/api/forecast", {
+      method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || "request failed");
+    state.res = j; draw(); readout();
+  }catch(e){
+    $("#readout").innerHTML = `<div class="cell" style="grid-column:1/-1"><div class="err">${e.message}</div></div>`;
+  }finally{ btn.disabled = false; btn.textContent = "Run forecast"; }
+}
+
+function readout(){
+  const r = state.res, m = r.metrics;
+  const cells = [];
+  if(m){
+    const skill = m.skill == null ? null : m.skill * 100;
+    const covErr = Math.abs(m.coverage80 - 80);
+    cells.push(
+      ["MAE", fmt(m.mae), "mean absolute error", ""],
+      ["RMSE", fmt(m.rmse), "penalises big misses", ""],
+      ["sMAPE", fmt(m.smape,1) + "<small>%</small>", "scale-free error", ""],
+      ["p10–p90 coverage", fmt(m.coverage80,1) + "<small>%</small>",
+        "80% is perfect calibration", covErr <= 6 ? "good" : covErr <= 15 ? "" : "poor"],
+      ["Skill vs naive", (skill>0?"+":"") + fmt(skill,1) + "<small>%</small>",
+        "error cut vs repeating last season", skill > 0 ? "good" : "poor"],
+    );
+  } else {
+    cells.push(
+      ["Horizon", r.horizon, "steps forecast beyond the data", ""],
+      ["Context", r.context_used.toLocaleString(), "steps fed to the model", ""],
+      ["Median", fmt(r.forecast[Math.floor(r.forecast.length/2)]), "midpoint of the forecast", ""],
+      ["Fan width", fmt(r.quantiles["0.9"].at(-1) - r.quantiles["0.1"].at(-1)),
+        "p10–p90 spread at the last step", ""],
+      ["Scoring", "off", "turn on hold-out to score", ""],
+    );
+  }
+  cells.push(["Latency", r.timing_ms + "<small>ms</small>", r.device.toUpperCase() + " · single series", ""]);
+  $("#readout").innerHTML = cells.map(([k,v,n,cls]) =>
+    `<div class="cell"><div class="v ${cls}">${v}</div><div class="k label">${k}</div><div class="n">${n}</div></div>`
+  ).join("");
+}
+
+/* ---------------- chart ---------------- */
+const SVGNS = "http://www.w3.org/2000/svg";
+const el = (n, a={}) => { const e = document.createElementNS(SVGNS,n);
+  for(const k in a) e.setAttribute(k, a[k]); return e; };
+
+function niceTicks(lo, hi, want=6){
+  const span = hi - lo || 1;
+  const raw = span / want, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1,2,2.5,5,10].find(m => raw / mag <= m) * mag;
+  const out = []; 
+  for(let v = Math.ceil(lo/step)*step; v <= hi + 1e-9; v += step) out.push(v);
+  return out;
+}
+
+function draw(){
+  const r = state.res, wrap = $("#wrap"), svg = $("#svg");
+  const W = wrap.clientWidth, H = wrap.clientHeight;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.innerHTML = "";
+  const M = {t:14, r:16, b:26, l:62};
+  const iw = W - M.l - M.r, ih = H - M.t - M.b;
+  if(iw <= 0 || ih <= 0) return;
+
+  const ctx = r.context, fore = r.forecast, act = r.actual, base = r.baseline;
+  const nC = ctx.length, nF = fore.length, N = nC + nF;
+  // Show a trailing slice of context so the forecast never gets visually crushed.
+  const show = Math.min(nC, Math.max(nF * 2, 96));
+  const start = nC - show, total = show + nF;
+
+  const qs = ["0.1","0.2","0.3","0.4","0.5","0.6","0.7","0.8","0.9"];
+  let lo = Infinity, hi = -Infinity;
+  const bump = v => { if(v < lo) lo = v; if(v > hi) hi = v; };
+  for(let i = start; i < nC; i++) bump(ctx[i]);
+  r.quantiles["0.1"].forEach(bump); r.quantiles["0.9"].forEach(bump);
+  fore.forEach(bump); if(act) act.forEach(bump);
+  if($("#bl").checked && base) base.forEach(bump);
+  const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
+
+  const X = i => M.l + (i / (total - 1)) * iw;
+  const Y = v => M.t + ih - ((v - lo) / (hi - lo)) * ih;
+  const xNow = X(show - 1);
+
+  // graph-paper grid: fine minor rules, stronger majors at the labelled ticks
+  const g = el("g"); svg.appendChild(g);
+  const ticks = niceTicks(lo, hi);
+  const minor = (ticks[1] - ticks[0]) / 5;
+  for(let v = ticks[0] - minor*5; v <= hi; v += minor)
+    if(v >= lo) g.appendChild(el("line",{x1:M.l,x2:W-M.r,y1:Y(v),y2:Y(v),stroke:"var(--grid-fine)","stroke-width":1}));
+  ticks.forEach(v => {
+    g.appendChild(el("line",{x1:M.l,x2:W-M.r,y1:Y(v),y2:Y(v),stroke:"var(--grid)","stroke-width":1}));
+    const t = el("text",{x:M.l-9,y:Y(v)+4,"text-anchor":"end",fill:"var(--ink-3)",
+      "font-family":"var(--mono)","font-size":"10.5"});
+    t.textContent = Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : (+v.toFixed(2));
+    g.appendChild(t);
+  });
+  const rawX = total / 9, magX = Math.pow(10, Math.floor(Math.log10(rawX)));
+  const xstep = [1,2,2.5,5,10].find(m => rawX / magX <= m) * magX;
+  for(let k = Math.ceil(-(show-1)/xstep)*xstep; k <= nF; k += xstep){
+    const i = k + show - 1;
+    g.appendChild(el("line",{x1:X(i),x2:X(i),y1:M.t,y2:M.t+ih,stroke:"var(--grid-fine)","stroke-width":1}));
+    const t = el("text",{x:X(i),y:H-9,"text-anchor":"middle",fill:"var(--ink-3)",
+      "font-family":"var(--mono)","font-size":"10.5"});
+    t.textContent = (k > 0 ? "+" : "") + k;
+    g.appendChild(t);
+  }
+
+  const path = pts => pts.map((p,i) => (i?"L":"M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join("");
+
+  // quantile fan: four nested bands, opacity rising toward the median
+  const fan = el("g"); svg.appendChild(fan);
+  [["0.1","0.9",.10],["0.2","0.8",.13],["0.3","0.7",.16],["0.4","0.6",.20]].forEach(([a,b,op]) => {
+    const up = r.quantiles[b].map((v,i) => [X(show-1+i), Y(v)]);
+    const dn = r.quantiles[a].map((v,i) => [X(show-1+i), Y(v)]).reverse();
+    fan.appendChild(el("path",{d: path(up) + path(dn).replace("M","L") + "Z",
+      fill:"var(--pen)", "fill-opacity":op, stroke:"none"}));
+  });
+
+  // observed history
+  svg.appendChild(el("path",{d: path(Array.from({length:show},(_,i) => [X(i), Y(ctx[start+i])])),
+    fill:"none", stroke:"var(--trace)", "stroke-width":1.4, "stroke-linejoin":"round"}));
+
+  // seasonal-naive baseline
+  if($("#bl").checked && base)
+    svg.appendChild(el("path",{d: path(base.map((v,i) => [X(show-1+i), Y(v)])),
+      fill:"none", stroke:"var(--ink-3)", "stroke-width":1.2, "stroke-dasharray":"1 3"}));
+
+  // held-out truth
+  if(act)
+    svg.appendChild(el("path",{d: path([[xNow, Y(ctx[nC-1])], ...act.map((v,i) => [X(show+i), Y(v)])]),
+      fill:"none", stroke:"var(--actual)", "stroke-width":1.6, "stroke-dasharray":"5 3"}));
+
+  // forecast median — the pen draws this one in
+  const fp = el("path",{d: path([[xNow, Y(ctx[nC-1])], ...fore.map((v,i) => [X(show+i), Y(v)])]),
+    fill:"none", stroke:"var(--pen)", "stroke-width":2, "stroke-linejoin":"round"});
+  svg.appendChild(fp);
+  if(!matchMedia("(prefers-reduced-motion: reduce)").matches){
+    const L = fp.getTotalLength();
+    fp.animate([{strokeDasharray:`0 ${L}`},{strokeDasharray:`${L} 0`}],
+      {duration:620, easing:"cubic-bezier(.2,.7,.3,1)"});
+    fan.animate([{opacity:0},{opacity:1}],{duration:620, easing:"ease-out"});
+  }
+
+  // the "now" tear line
+  svg.appendChild(el("line",{x1:xNow,x2:xNow,y1:M.t,y2:M.t+ih,stroke:"var(--ink)",
+    "stroke-width":1,"stroke-dasharray":"2 3"}));
+  const nl = el("text",{x:xNow+5,y:M.t+11,fill:"var(--ink)","font-family":"var(--cond)",
+    "font-size":"10","letter-spacing":"1",});
+  nl.textContent = "NOW"; svg.appendChild(nl);
+
+  // hover crosshair + readout
+  const cross = el("line",{y1:M.t,y2:M.t+ih,stroke:"var(--ink)","stroke-width":1,opacity:0});
+  svg.appendChild(cross);
+  const tip = $("#tip");
+  svg.onmouseleave = () => { cross.setAttribute("opacity",0); tip.classList.remove("on"); };
+  svg.onmousemove = ev => {
+    const bx = svg.getBoundingClientRect();
+    const i = Math.round(((ev.clientX - bx.left - M.l) / iw) * (total - 1));
+    if(i < 0 || i >= total) return;
+    cross.setAttribute("x1", X(i)); cross.setAttribute("x2", X(i)); cross.setAttribute("opacity",.35);
+    const k = i - (show - 1);
+    let rows;
+    if(i < show) rows = [["observed", fmt(ctx[start+i])]];
+    else{
+      const j = i - show;
+      rows = [["forecast", fmt(fore[j])],
+              ["p10–p90", fmt(r.quantiles["0.1"][j]) + " – " + fmt(r.quantiles["0.9"][j])]];
+      if(act) rows.push(["held out", fmt(act[j])]);
+    }
+    tip.innerHTML = `<b>t${k>0?"+":""}${k}</b><br>` +
+      rows.map(([a,b]) => `${a} <b>${b}</b>`).join("<br>");
+    tip.classList.add("on");
+    const left = Math.min(X(i) + 12, W - tip.offsetWidth - 8);
+    tip.style.left = left + "px"; tip.style.top = (M.t + 8) + "px";
+  };
+}
+
+/* ---------------- wiring ---------------- */
+$("#h").oninput = e => { $("#h-out").textContent = e.target.value;
+  const n = state.custom ? state.custom.length : (state.series.find(x=>x.id===state.sel)||{}).n;
+  if(n) clampControls(n); };
+$("#c").oninput = e => $("#c-out").textContent = e.target.value;
+$("#h").onchange = run; $("#c").onchange = run;
+$("#bt").onchange = run;
+$("#bl").onchange = () => state.res && draw();
+$("#run").onclick = run;
+$("#dev").onclick = e => {
+  const b = e.target.closest("button[data-d]"); if(!b) return;
+  state.device = b.dataset.d;
+  document.querySelectorAll("#dev button").forEach(x =>
+    x.setAttribute("aria-pressed", String(x.dataset.d === state.device)));
+  run();
+};
+document.querySelectorAll("[data-close]").forEach(b =>
+  b.onclick = () => b.closest("dialog").close());
+$("#paste-open").onclick = () => $("#paste-dlg").showModal();
+$("#bench-open").onclick = () => $("#bench-dlg").showModal();
+
+$("#paste-go").onclick = () => {
+  const vals = $("#paste-ta").value.split(/[\s,;]+/).filter(Boolean).map(Number);
+  const err = $("#paste-err");
+  if(vals.length < 40 || vals.some(v => !isFinite(v))){
+    err.textContent = vals.some(v => !isFinite(v))
+      ? "Some entries are not numbers. Values only, one per line or comma-separated."
+      : `Needs at least 40 points; found ${vals.length}.`;
+    return;
+  }
+  err.textContent = "";
+  state.custom = vals; state.sel = null; clampControls(vals.length);
+  document.querySelectorAll(".chan").forEach(c => c.setAttribute("aria-pressed","false"));
+  $("#title").textContent = "Your series";
+  $("#blurb").textContent = `${vals.length} points pasted in. Hold-out scoring compares the model against a last-value baseline.`;
+  $("#paste-dlg").close(); run();
+};
+
+$("#bench-go").onclick = async () => {
+  const btn = $("#bench-go"), out = $("#bench-out");
+  btn.disabled = true; btn.textContent = "Running…"; out.innerHTML = "";
+  try{
+    const res = {};
+    for(const d of ["mps","cpu"]){
+      const r = await fetch("/api/benchmark", {method:"POST",
+        headers:{"Content-Type":"application/json"}, body:JSON.stringify({device:d})});
+      res[d] = (await r.json()).rows;
+    }
+    out.innerHTML = `<table class="bench"><thead><tr><th>Context</th><th>MPS</th><th>CPU</th></tr></thead>
+      <tbody>${res.mps.map((row,i) => `<tr><td>${row.context.toLocaleString()}</td>
+        <td>${row.ms} ms</td><td>${res.cpu[i].ms} ms</td></tr>`).join("")}</tbody></table>
+      <p style="font-size:11.5px;color:var(--ink-3);margin:8px 0 0">Horizon 128. Times cover one series end to end, including quantiles.</p>`;
+  }catch(e){ out.innerHTML = `<div class="err">${e.message}</div>`; }
+  finally{ btn.disabled = false; btn.textContent = "Run benchmark"; }
+};
+
+new ResizeObserver(() => state.res && draw()).observe($("#wrap"));
+boot();
+</script>
+</body>
+</html>
