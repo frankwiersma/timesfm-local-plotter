@@ -1,0 +1,5 @@
+# Only needed to produce web/models/*.onnx; the browser page itself needs none of this.
+timesfm[torch]==3.0.0
+onnx>=1.19
+onnxruntime>=1.29
+onnxscript>=0.5

@@ -10,6 +10,11 @@ earning its keep.
 
 ![The plotter forecasting a synthetic national grid load series](docs/screenshot.png)
 
+> **Running it in the browser instead?** The `browser-inference` branch exports
+> the model to ONNX and runs it client-side with ONNX Runtime Web — no Python at
+> inference time. See [BROWSER.md](BROWSER.md), including why Transformers.js
+> cannot do this.
+
 ## Why this exists
 
 TimesFM is small enough to run locally, but "it runs" and "it's any good" are different
