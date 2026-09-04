@@ -65,6 +65,12 @@ button,input,select{font:inherit;color:inherit}
 .legend-diff span:first-child{margin-right:3px} .legend-diff span:last-child{margin-left:3px}
 .legend-diff i{width:8px;height:3px;display:block}
 .diff{cursor:help} .tag{cursor:help}
+.tipbox{position:fixed;z-index:100;pointer-events:none;opacity:0;transition:opacity .12s;
+  background:var(--ink);color:var(--paper);padding:7px 9px;font-size:11.5px;line-height:1.45;
+  max-width:270px;box-shadow:0 2px 10px rgba(21,27,22,.22)}
+.tipbox.on{opacity:1}
+.tipbox b{color:#fff;font-weight:600;display:block;margin-bottom:2px;
+  font-family:var(--cond);text-transform:uppercase;letter-spacing:.08em;font-size:9.5px}
 .ctrls{border-top:1px solid var(--rule);padding:14px 18px 16px;background:var(--panel)}
 .field{margin-bottom:13px}
 .field-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px}
@@ -160,6 +166,8 @@ svg{display:block;width:100%;height:100%}
   <div id="boot-err" class="err" style="margin-top:14px"></div>
 </div></div>
 
+<div class="tipbox" id="tipbox" role="tooltip"></div>
+
 <div class="app">
   <aside class="rail">
     <div class="brand">
@@ -169,7 +177,8 @@ svg{display:block;width:100%;height:100%}
     <div class="rail-scroll">
       <div class="sect">
         <span class="label">Channels</span>
-        <div class="legend-diff" title="Each channel is rated 1-5 for how forecastable it is. Hover a channel's bars for the reason.">
+        <div class="legend-diff" data-tip-title="Difficulty scale"
+             data-tip="Each channel is rated 1 to 5 for how forecastable it is. Hover a channel's own bars for the reason.">
           <span>easy</span>
           <i class="on"></i><i class="on"></i><i class="on"></i><i class="on max"></i><i class="on max"></i>
           <span>impossible</span>
@@ -326,17 +335,18 @@ const PRICE_SOURCES = [
    url:s => `https://api.binance.com/api/v3/klines?symbol=${s.symbol}USDT`
           + `&interval=3d&limit=${BARS_WANTED}`,
    parse:j => ({closes:j.map(k => +k[4]), times:j.map(k => +k[0]), stepDays:3})},
-  {name:"CoinGecko", // daily granularity above 90 days; resampled below
-   url:s => `https://api.coingecko.com/api/v3/coins/${s.coingecko}/market_chart`
-          + `?vs_currency=usd&days=${BARS_WANTED * TARGET_STEP_DAYS}&interval=daily`,
-   parse:j => ({closes:j.prices.map(p => +p[1]), times:j.prices.map(p => +p[0]), stepDays:1})},
-  {name:"Kraken",    // daily, capped near 720 candles (~2 years)
+  {name:"Kraken",    // daily, 721 candles = 1.97 years. Answers as XXBTZUSD /
+                     // XETHZUSD whatever pair you ask for, hence the key search.
    url:s => `https://api.kraken.com/0/public/OHLC?pair=${s.symbol}USD&interval=1440`,
    parse:j => {
      const key = Object.keys(j.result || {}).find(k => k !== "last");
      const rows = j.result[key] || [];
      return {closes:rows.map(c => +c[4]), times:rows.map(c => c[0]*1000), stepDays:1};
    }},
+  {name:"CoinGecko", // free tier refuses ranges beyond 365 days (error 10012)
+   url:s => `https://api.coingecko.com/api/v3/coins/${s.coingecko}/market_chart`
+          + `?vs_currency=usd&days=365&interval=daily`,
+   parse:j => ({closes:j.prices.map(p => +p[1]), times:j.prices.map(p => +p[0]), stepDays:1})},
   {name:"Coinbase",  // daily, 300-candle cap — rarely enough, kept as a last resort
    url:s => `https://api.exchange.coinbase.com/products/${s.symbol}-USD/candles?granularity=86400`,
    parse:j => {
@@ -373,7 +383,7 @@ async function loadLive(s){
                           times:  keep.map(i => raw.times[i]),
                           stepDays: raw.stepDays}, TARGET_STEP_DAYS);
       const years = d.closes.length * d.stepDays / 365.25;
-      if(years < 2) throw new Error(`only ${years.toFixed(1)}y of history`);
+      if(years < 0.75) throw new Error(`only ${years.toFixed(1)}y of history`);
       s.values = d.closes; s.n = d.closes.length;
       s.times = d.times; s.stepDays = d.stepDays; s.stepMs = d.stepDays * 864e5;
       s.years = years; s.source = src.name; s.fetchedAt = new Date();
@@ -550,12 +560,14 @@ function renderChannels(){
     const lv = d.level;
     const bars = [1,2,3,4,5].map(i => `<i class="${i<=lv?"on":""} ${lv>=4&&i<=lv?"max":""}"></i>`).join("");
     const kind = s.live ? "live" : s.real ? "real" : "synthetic";
-    const tag = `<span class="tag ${kind}" title="${TAG_HELP[kind]}">${kind}</span>`;
+    const tag = `<span class="tag ${kind}" data-tip-title="${kind}" `
+              + `data-tip="${TAG_HELP[kind]}" aria-label="${TAG_HELP[kind]}">${kind}</span>`;
     const count = s.n ? `${s.n.toLocaleString()} × ${s.freq}` : `${s.freq} · not loaded`;
     return `<button class="chan" data-id="${s.id}" aria-pressed="false">
       <div class="chan-top"><span class="chan-name">${s.name}</span>${tag}</div>
       <div class="chan-meta"><span class="num">${count}</span>
-        <span class="diff" title="Forecast difficulty ${lv}/5. ${d.text}">${bars}</span>
+        <span class="diff" data-tip-title="Difficulty ${lv} of 5"
+              data-tip="${d.text}" aria-label="Forecast difficulty ${lv} of 5. ${d.text}">${bars}</span>
       </div></button>`;
   }).join("");
   $("#chans").onclick = async e => {
@@ -858,6 +870,26 @@ $("#c").oninput = e => { $("#c-out").textContent = e.target.value; updateCaps();
 $("#h").onchange = run; $("#c").onchange = run; $("#bt").onchange = run;
 $("#bl").onchange = () => state.res && draw();
 $("#run").onclick = run;
+/* Native title= only changes the cursor on many setups and never renders the
+   text, so the hints are drawn here instead. */
+const tipbox = $("#tipbox");
+function hideTip(){ tipbox.classList.remove("on"); }
+document.addEventListener("mouseover", e => {
+  const host = e.target.closest("[data-tip]");
+  if(!host){ hideTip(); return; }
+  tipbox.innerHTML = (host.dataset.tipTitle ? `<b>${host.dataset.tipTitle}</b>` : "")
+    + host.dataset.tip;
+  tipbox.classList.add("on");
+  const r = host.getBoundingClientRect();
+  const w = tipbox.offsetWidth, h = tipbox.offsetHeight;
+  let x = Math.min(Math.max(8, r.left + r.width/2 - w/2), innerWidth - w - 8);
+  let y = r.top - h - 8;
+  if(y < 8) y = r.bottom + 8;
+  tipbox.style.left = x + "px"; tipbox.style.top = y + "px";
+});
+document.addEventListener("mouseout", e => { if(e.target.closest("[data-tip]")) hideTip(); });
+window.addEventListener("scroll", hideTip, true);
+
 $("#limits-open").onclick = () => $("#limits-dlg").showModal();
 document.querySelectorAll("[data-close]").forEach(b => b.onclick = () => b.closest("dialog").close());
 new ResizeObserver(() => state.res && draw()).observe($("#wrap"));

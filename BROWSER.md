@@ -175,6 +175,21 @@ browser — no key, no proxy, nothing server-side. The page tries Binance, Krake
 Coinbase and CoinGecko in order and uses whichever answers first, then names it
 in the channel description.
 
+Verified against live responses from all four providers:
+
+| Source | Bars after resampling | Span | Notes |
+| --- | --: | --: | --- |
+| Binance | 700 x 3d | **5.7 y** | native 3-day candles, the only source reaching four years |
+| Kraken | 240 x 3d | 2.0 y | daily, 721-candle cap; answers as `XXBTZUSD` whatever pair you ask for |
+| CoinGecko | 122 x 3d | 1.0 y | free tier refuses ranges past 365 days (error 10012) |
+| Coinbase | 116 x 3d | 1.0 y | daily, 350-candle cap |
+
+Only Binance reaches four years, and it is unavailable in some regions, so the
+acceptance floor sits at nine months rather than the two years an earlier version
+used — that threshold rejected every fallback and left the chain one blocked
+request from useless. Whatever answers, the channel reports its real span and the
+horizon slider clamps to what the series can support.
+
 **The bar interval falls out of the context window.** Four years is 1,461 days
 and the export's context is 512 bars, so 1461 / 512 = 2.85 days per bar. The
 nearest standard exchange interval is 3 days, which puts 512 x 3d = 1,536 days =
