@@ -173,7 +173,18 @@ from the export's `config.json` and adjusts its context slider to match.
 Bitcoin and Ethereum are fetched straight from a public exchange API in the
 browser — no key, no proxy, nothing server-side. The page tries Binance, Kraken,
 Coinbase and CoinGecko in order and uses whichever answers first, then names it
-in the channel description. If all four fail it says so and leaves the other
+in the channel description.
+
+**The bar interval falls out of the context window.** Four years is 1,461 days
+and the export's context is 512 bars, so 1461 / 512 = 2.85 days per bar. The
+nearest standard exchange interval is 3 days, which puts 512 x 3d = 1,536 days =
+**4.2 years inside a full context**. Binance serves 3-day candles natively;
+sources that only offer daily bars are resampled to 3d in the browser, anchored
+at the newest bar so the most recent bucket is never partial. Around 700 bars
+are fetched so a 512-bar context still leaves room for a hold-out.
+
+These channels carry real timestamps, so the chart labels a date axis for them
+instead of sample offsets. If all four fail it says so and leaves the other
 channels working; exchange APIs are routinely blocked by ad blockers, corporate
 networks and regional restrictions.
 

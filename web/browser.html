@@ -60,6 +60,11 @@ button,input,select{font:inherit;color:inherit}
 .diff{display:flex;gap:2px;margin-left:auto}
 .diff i{width:8px;height:3px;background:var(--grid);display:block}
 .diff i.on{background:var(--ink-2)} .diff i.on.max{background:var(--bad)}
+.legend-diff{display:flex;align-items:center;gap:3px;margin-top:6px;cursor:help}
+.legend-diff span{font-family:var(--cond);text-transform:uppercase;letter-spacing:.08em;font-size:9px;color:var(--ink-3)}
+.legend-diff span:first-child{margin-right:3px} .legend-diff span:last-child{margin-left:3px}
+.legend-diff i{width:8px;height:3px;display:block}
+.diff{cursor:help} .tag{cursor:help}
 .ctrls{border-top:1px solid var(--rule);padding:14px 18px 16px;background:var(--panel)}
 .field{margin-bottom:13px}
 .field-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px}
@@ -161,7 +166,17 @@ svg{display:block;width:100%;height:100%}
       <h1>TimesFM <em>3.0</em><br>in the browser</h1>
       <p>The same plotter, with inference moved out of Python and into this tab via ONNX Runtime Web.</p>
     </div>
-    <div class="rail-scroll"><div class="sect"><span class="label">Channels</span></div><div id="chans"></div></div>
+    <div class="rail-scroll">
+      <div class="sect">
+        <span class="label">Channels</span>
+        <div class="legend-diff" title="Each channel is rated 1-5 for how forecastable it is. Hover a channel's bars for the reason.">
+          <span>easy</span>
+          <i class="on"></i><i class="on"></i><i class="on"></i><i class="on max"></i><i class="on max"></i>
+          <span>impossible</span>
+        </div>
+      </div>
+      <div id="chans"></div>
+    </div>
     <div class="ctrls">
       <div class="field">
         <div class="field-top"><span class="label">Horizon</span><output id="h-out" class="num">96</output></div>
@@ -265,41 +280,83 @@ const MODEL_DIR = (new URLSearchParams(location.search).get("models") || "models
 const state = {series:[], sel:null, cfg:null, sess:null, res:null, ep:"—"};
 const REPO = "https://github.com/frankwiersma/timesfm-local-plotter";
 
+/* The five bars on each channel rate how forecastable the series is, not how
+   important it is. Spelled out here because a row of bars means nothing on its
+   own — it is also shown as a legend above the list. */
+const DIFFICULTY = {
+  easy:       {level:1, text:"Easy — strong, stable seasonality. The model should beat a naive baseline comfortably."},
+  medium:     {level:2, text:"Medium — a learnable pattern with real noise on top. Expect a modest gain over naive."},
+  hard:       {level:3, text:"Hard — weak structure. Often no better than simply repeating the last season."},
+  brutal:     {level:4, text:"Brutal — spiky and fat-tailed. Point forecasts cannot catch the spikes; judge it by the quantile fan."},
+  impossible: {level:5, text:"Impossible — there is no signal to find. A flat forecast with a widening fan is the correct answer."},
+};
+const TAG_HELP = {
+  real:      "Real recorded data, not generated.",
+  synthetic: "Generated from a fixed seed, so results reproduce exactly.",
+  live:      "Fetched from a public exchange API in your browser, right now.",
+};
+
 /* Live price channels. Fetched straight from the exchange in the browser, so
    no key and no backend — but also at the mercy of each provider's CORS, rate
    limits and regional blocks. Hence a chain: the first source that returns a
    usable series wins, and the UI names whichever one answered. */
 const LIVE = [
   {id:"btc-usd", name:"Bitcoin", symbol:"BTC", coingecko:"bitcoin", unit:"USD",
-   freq:"hourly", real:true, live:true, difficulty:"impossible", period:0,
-   blurb:"Live BTC/USD. A price series is close to a random walk, so the honest "
+   freq:"3-day", real:true, live:true, difficulty:"impossible", period:0,
+   blurb:"Live BTC/USD on 3-day bars, chosen so a full context spans about four years. "
+       + "A price series is close to a random walk, so the honest "
        + "forecast is nearly flat with a fan that widens fast. If the median "
        + "wanders confidently, that is the model reading noise as signal."},
   {id:"eth-usd", name:"Ethereum", symbol:"ETH", coingecko:"ethereum", unit:"USD",
-   freq:"hourly", real:true, live:true, difficulty:"impossible", period:0,
-   blurb:"Live ETH/USD. Same story as Bitcoin, and a useful sanity check: a "
+   freq:"3-day", real:true, live:true, difficulty:"impossible", period:0,
+   blurb:"Live ETH/USD on 3-day bars, the same four-year window as Bitcoin. A useful sanity check: a "
        + "forecaster that looks skilful here is usually fitting noise. Compare "
        + "its skill score against the random walk channel."},
 ];
 
+/* Interval maths: the export's context window is 512 bars, and 4 years is 1,461
+   days, so 1461/512 = 2.85 days per bar. The nearest standard exchange interval
+   is 3 days, which puts 512 x 3d = 1,536 days = 4.2 years inside a full context.
+   Sources that only offer daily bars are resampled to 3d client-side. */
+const TARGET_STEP_DAYS = 3;
+const BARS_WANTED = 700;          // 512 context + hold-out, with room to spare
+
 const PRICE_SOURCES = [
-  {name:"Binance",
-   url:s => `https://api.binance.com/api/v3/klines?symbol=${s.symbol}USDT&interval=1h&limit=1000`,
-   parse:j => j.map(k => +k[4])},
-  {name:"Kraken",
-   url:s => `https://api.kraken.com/0/public/OHLC?pair=${s.symbol}USD&interval=60`,
+  {name:"Binance",   // native 3d candles, 1000-candle cap
+   url:s => `https://api.binance.com/api/v3/klines?symbol=${s.symbol}USDT`
+          + `&interval=3d&limit=${BARS_WANTED}`,
+   parse:j => ({closes:j.map(k => +k[4]), times:j.map(k => +k[0]), stepDays:3})},
+  {name:"CoinGecko", // daily granularity above 90 days; resampled below
+   url:s => `https://api.coingecko.com/api/v3/coins/${s.coingecko}/market_chart`
+          + `?vs_currency=usd&days=${BARS_WANTED * TARGET_STEP_DAYS}&interval=daily`,
+   parse:j => ({closes:j.prices.map(p => +p[1]), times:j.prices.map(p => +p[0]), stepDays:1})},
+  {name:"Kraken",    // daily, capped near 720 candles (~2 years)
+   url:s => `https://api.kraken.com/0/public/OHLC?pair=${s.symbol}USD&interval=1440`,
    parse:j => {
      const key = Object.keys(j.result || {}).find(k => k !== "last");
-     return (j.result[key] || []).map(c => +c[4]);
+     const rows = j.result[key] || [];
+     return {closes:rows.map(c => +c[4]), times:rows.map(c => c[0]*1000), stepDays:1};
    }},
-  {name:"Coinbase",
-   url:s => `https://api.exchange.coinbase.com/products/${s.symbol}-USD/candles?granularity=3600`,
-   parse:j => j.map(c => +c[4]).reverse()},   // Coinbase returns newest first
-  {name:"CoinGecko",
-   url:s => `https://api.coingecko.com/api/v3/coins/${s.coingecko}/market_chart`
-          + `?vs_currency=usd&days=30`,
-   parse:j => j.prices.map(p => +p[1])},
+  {name:"Coinbase",  // daily, 300-candle cap — rarely enough, kept as a last resort
+   url:s => `https://api.exchange.coinbase.com/products/${s.symbol}-USD/candles?granularity=86400`,
+   parse:j => {
+     const rows = j.slice().reverse();   // Coinbase returns newest first
+     return {closes:rows.map(c => +c[4]), times:rows.map(c => c[0]*1000), stepDays:1};
+   }},
 ];
+
+/* Aggregate finer bars up to the target step, anchored at the newest bar so the
+   most recent bucket is complete rather than partial. */
+function resample(d, targetDays){
+  const factor = Math.round(targetDays / d.stepDays);
+  if(!(factor > 1)) return d;
+  const closes = [], times = [];
+  for(let end = d.closes.length; end - factor >= 0; end -= factor){
+    closes.push(d.closes[end-1]); times.push(d.times[end-1]);
+  }
+  closes.reverse(); times.reverse();
+  return {closes, times, stepDays: d.stepDays * factor};
+}
 
 async function loadLive(s){
   if(s.values) return s;
@@ -308,10 +365,18 @@ async function loadLive(s){
     try{
       const res = await fetch(src.url(s));
       if(!res.ok) throw new Error("HTTP " + res.status);
-      const values = src.parse(await res.json()).filter(Number.isFinite);
-      if(values.length < 200) throw new Error(`only ${values.length} points`);
-      s.values = values; s.n = values.length;
-      s.source = src.name; s.fetchedAt = new Date();
+      const raw = src.parse(await res.json());
+      const keep = raw.closes
+        .map((v,i) => i)
+        .filter(i => Number.isFinite(raw.closes[i]) && Number.isFinite(raw.times[i]));
+      const d = resample({closes: keep.map(i => raw.closes[i]),
+                          times:  keep.map(i => raw.times[i]),
+                          stepDays: raw.stepDays}, TARGET_STEP_DAYS);
+      const years = d.closes.length * d.stepDays / 365.25;
+      if(years < 2) throw new Error(`only ${years.toFixed(1)}y of history`);
+      s.values = d.closes; s.n = d.closes.length;
+      s.times = d.times; s.stepDays = d.stepDays; s.stepMs = d.stepDays * 864e5;
+      s.years = years; s.source = src.name; s.fetchedAt = new Date();
       return s;
     }catch(e){ failures.push(`${src.name} (${e.message})`); }
   }
@@ -481,17 +546,18 @@ async function boot(){
 }
 
 function renderChannels(){
-  const rank = {easy:1, medium:2, hard:3, brutal:4, impossible:5};
   $("#chans").innerHTML = state.series.map(s => {
-    const lv = rank[s.difficulty] || 1;
+    const d = DIFFICULTY[s.difficulty] || DIFFICULTY.easy;
+    const lv = d.level;
     const bars = [1,2,3,4,5].map(i => `<i class="${i<=lv?"on":""} ${lv>=4&&i<=lv?"max":""}"></i>`).join("");
-    const tag = s.live ? '<span class="tag live">live</span>'
-              : `<span class="tag ${s.real?"real":""}">${s.real?"real":"synthetic"}</span>`;
+    const kind = s.live ? "live" : s.real ? "real" : "synthetic";
+    const tag = `<span class="tag ${kind}" title="${TAG_HELP[kind]}">${kind}</span>`;
     const count = s.n ? `${s.n.toLocaleString()} × ${s.freq}` : `${s.freq} · not loaded`;
     return `<button class="chan" data-id="${s.id}" aria-pressed="false">
       <div class="chan-top"><span class="chan-name">${s.name}</span>${tag}</div>
       <div class="chan-meta"><span class="num">${count}</span>
-        <span class="diff" title="forecast difficulty: ${s.difficulty}">${bars}</span></div></button>`;
+        <span class="diff" title="Forecast difficulty ${lv}/5. ${d.text}">${bars}</span>
+      </div></button>`;
   }).join("");
   $("#chans").onclick = async e => {
     const b = e.target.closest(".chan"); if(!b) return;
@@ -522,8 +588,11 @@ async function select(id){
   if(s.live){
     const when = s.fetchedAt.toLocaleString(undefined,
       {hour:"2-digit", minute:"2-digit", day:"numeric", month:"short"});
-    $("#blurb").textContent = `${s.blurb}  ·  ${s.n.toLocaleString()} hourly closes `
-      + `from ${s.source}, fetched ${when}. Not investment advice.`;
+    const ctxYears = state.cfg.window * s.stepDays / 365.25;
+    $("#blurb").textContent = `${s.blurb}  ·  ${s.n.toLocaleString()} ${s.stepDays}-day bars `
+      + `(${s.years.toFixed(1)} years) from ${s.source}, fetched ${when}; the `
+      + `${state.cfg.window}-bar context covers ${ctxYears.toFixed(1)} years. `
+      + `Not investment advice.`;
   }
   const h = $("#h");
   h.max = Math.max(8, Math.min(state.cfg.horizon, Math.floor(s.n/3/8)*8));
@@ -574,8 +643,11 @@ async function run(){
       for(let k = 0; k < 9; k++) quantiles[(0.1*(k+1)).toFixed(1)].push(q[t*9 + k]);
     }
     const baseline = seasonalNaive(ctx, horizon, s.period);
+    // absolute time of ctx[0], so the chart can label a real date axis
+    const ctxStart = history.length - used;
     state.res = {context:ctx, forecast, quantiles, actual, baseline,
                  timing_ms:ms, horizon, context_used:used,
+                 t0: s.times ? s.times[ctxStart] : null, stepMs: s.stepMs || null,
                  metrics: actual ? metrics(actual, forecast, quantiles, baseline) : null};
     draw(); readout();
   }catch(e){
@@ -631,6 +703,16 @@ function readout(){
 const SVGNS = "http://www.w3.org/2000/svg";
 const el = (n,a={}) => { const e = document.createElementNS(SVGNS,n);
   for(const k in a) e.setAttribute(k,a[k]); return e; };
+/* Pick label granularity from the span the chart covers: years of 3-day bars
+   want "Mar 2024", a few weeks want "12 Mar", intraday wants a clock. */
+function stampFmt(ms, spanMs){
+  const d = new Date(ms);
+  if(spanMs > 400*864e5) return d.toLocaleDateString(undefined,{month:"short", year:"numeric"});
+  if(spanMs > 3*864e5)   return d.toLocaleDateString(undefined,{day:"numeric", month:"short"});
+  return d.toLocaleString(undefined,{day:"numeric", month:"short",
+                                     hour:"2-digit", minute:"2-digit"});
+}
+
 function niceTicks(lo,hi,want=6){
   const span = hi-lo || 1, raw = span/want, mag = Math.pow(10,Math.floor(Math.log10(raw)));
   const step = [1,2,2.5,5,10].find(m => raw/mag <= m)*mag;
@@ -666,13 +748,18 @@ function draw(){
     t.textContent = Math.abs(v)>=1000 ? Math.round(v).toLocaleString() : (+v.toFixed(2));
     g.appendChild(t);
   });
+  const dated = r.t0 != null && r.stepMs;
+  // index i on the chart is full-series index (start + i)
+  const timeAt = i => r.t0 + (start + i) * r.stepMs;
+  const spanMs = dated ? total * r.stepMs : 0;
   const rawX = total/9, magX = Math.pow(10,Math.floor(Math.log10(rawX)));
   const xstep = [1,2,2.5,5,10].find(m => rawX/magX <= m)*magX;
   for(let k=Math.ceil(-(show-1)/xstep)*xstep; k<=nF; k+=xstep){
     const i = k+show-1;
     g.appendChild(el("line",{x1:X(i),x2:X(i),y1:M.t,y2:M.t+ih,stroke:"var(--grid-fine)","stroke-width":1}));
     const t = el("text",{x:X(i),y:H-9,"text-anchor":"middle",fill:"var(--ink-3)","font-family":"var(--mono)","font-size":"10.5"});
-    t.textContent = (k>0?"+":"")+k; g.appendChild(t);
+    t.textContent = dated ? stampFmt(timeAt(i), spanMs) : (k>0?"+":"")+k;
+    g.appendChild(t);
   }
   const path = pts => pts.map((p,i) => (i?"L":"M")+p[0].toFixed(1)+" "+p[1].toFixed(1)).join("");
   const fan = el("g"); svg.appendChild(fan);
@@ -719,7 +806,11 @@ function draw(){
               ["p10–p90", fmt(r.quantiles["0.1"][j])+" – "+fmt(r.quantiles["0.9"][j])]];
       if(act) rows.push(["held out", fmt(act[j])]);
     }
-    tip.innerHTML = `<b>t${k>0?"+":""}${k}</b><br>` + rows.map(([a,b])=>`${a} <b>${b}</b>`).join("<br>");
+    const head = dated
+      ? new Date(timeAt(i)).toLocaleDateString(undefined,
+          {day:"numeric", month:"short", year:"numeric"})
+      : `t${k>0?"+":""}${k}`;
+    tip.innerHTML = `<b>${head}</b><br>` + rows.map(([a,b])=>`${a} <b>${b}</b>`).join("<br>");
     tip.classList.add("on");
     tip.style.left = Math.min(X(i)+12, W-tip.offsetWidth-8)+"px";
     tip.style.top = (M.t+8)+"px";
