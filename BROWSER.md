@@ -184,7 +184,17 @@ at the newest bar so the most recent bucket is never partial. Around 700 bars
 are fetched so a 512-bar context still leaves room for a hold-out.
 
 These channels carry real timestamps, so the chart labels a date axis for them
-instead of sample offsets. If all four fail it says so and leaves the other
+instead of sample offsets.
+
+**The vertical marker is the forecast origin, not the present.** With hold-out
+scoring on, the model is cut off `horizon` bars before the end of the data, and
+everything to the right of the line is prediction against data it never saw. On
+3-day bars a 96-step horizon withholds 288 days, so the origin sits roughly nine
+months back — which looks like a broken clock if the line is labelled "now". It
+reads `FORECAST FROM <date>` at the origin and `DATA ENDS <date>` at the right
+edge, and the slider captions convert bar counts into real durations
+(`96 bars = 288 days`). Turn hold-out off and the marker becomes `NOW`, because
+then the context really does run to the latest bar. If all four fail it says so and leaves the other
 channels working; exchange APIs are routinely blocked by ad blockers, corporate
 networks and regional restrictions.
 

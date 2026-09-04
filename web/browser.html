@@ -532,8 +532,7 @@ async function boot(){
     $("#h").max = state.cfg.horizon;
     $("#lim-ctx").textContent = `${state.cfg.window} points`;
     $("#lim-hor").textContent = `${state.cfg.horizon} steps`;
-    $("#c-cap").textContent = `max ${state.cfg.window} — fixed by the export window`;
-    $("#h-cap").textContent = `max ${state.cfg.horizon} — fixed by the export`;
+    updateCaps();
     $("#repo-link").href = REPO; $("#repo-link-2").href = REPO;
     $("#lamp").className = "lamp ready"; $("#lamp-t").textContent = "Ready";
     $("#run").disabled = false; $("#run").textContent = "Run forecast";
@@ -563,6 +562,19 @@ function renderChannels(){
     const b = e.target.closest(".chan"); if(!b) return;
     if(await select(b.dataset.id)) run();
   };
+}
+
+/* Bar counts mean nothing on a 3-day series until you convert them: 96 bars of
+   hold-out is 288 days, which is why the forecast origin sits so far back. */
+function updateCaps(){
+  const s = state.series.find(x => x.id === state.sel);
+  const step = s && s.stepDays;
+  const span = n => step ? ` = ${(n*step) >= 365 ? (n*step/365.25).toFixed(1)+" years"
+                                                 : (n*step)+" days"}` : "";
+  $("#c-cap").textContent = `${$("#c").value} bars${span(+$("#c").value)}`
+    + ` · max ${state.cfg.window}, fixed by the export window`;
+  $("#h-cap").textContent = `${$("#h").value} bars${span(+$("#h").value)}`
+    + ` · max ${state.cfg.horizon}, fixed by the export`;
 }
 
 const press = id => document.querySelectorAll(".chan")
@@ -597,6 +609,7 @@ async function select(id){
   const h = $("#h");
   h.max = Math.max(8, Math.min(state.cfg.horizon, Math.floor(s.n/3/8)*8));
   if(+h.value > +h.max){ h.value = h.max; $("#h-out").textContent = h.value; }
+  updateCaps();
   return true;
 }
 
@@ -786,8 +799,31 @@ function draw(){
     fan.animate([{opacity:0},{opacity:1}],{duration:620, easing:"ease-out"});
   }
   svg.appendChild(el("line",{x1:xNow,x2:xNow,y1:M.t,y2:M.t+ih,stroke:"var(--ink)","stroke-width":1,"stroke-dasharray":"2 3"}));
-  const nl = el("text",{x:xNow+5,y:M.t+11,fill:"var(--ink)","font-family":"var(--cond)","font-size":"10","letter-spacing":"1"});
-  nl.textContent = "NOW"; svg.appendChild(nl);
+  /* With a hold-out this line is the forecast origin, not the present: the model
+     is cut off here and everything to the right is prediction against data it
+     never saw. Labelling it NOW is wrong and reads as a broken clock. */
+  const nl = el("text",{x:xNow+5,y:M.t+11,fill:"var(--ink)","font-family":"var(--cond)",
+    "font-size":"10","letter-spacing":"1"});
+  nl.textContent = act ? "FORECAST FROM" : "NOW";
+  svg.appendChild(nl);
+  if(dated){
+    const dl = el("text",{x:xNow+5,y:M.t+22,fill:"var(--ink-2)","font-family":"var(--mono)","font-size":"9.5"});
+    dl.textContent = new Date(timeAt(show-1)).toLocaleDateString(undefined,
+      {day:"numeric", month:"short", year:"numeric"});
+    svg.appendChild(dl);
+    if(act){
+      // ...and say where the real data actually ends, so the gap is legible
+      const rl = el("text",{x:W-M.r,y:M.t+11,"text-anchor":"end",fill:"var(--ink-3)",
+        "font-family":"var(--cond)","font-size":"10","letter-spacing":"1"});
+      rl.textContent = "DATA ENDS";
+      svg.appendChild(rl);
+      const rd = el("text",{x:W-M.r,y:M.t+22,"text-anchor":"end",fill:"var(--ink-2)",
+        "font-family":"var(--mono)","font-size":"9.5"});
+      rd.textContent = new Date(timeAt(total-1)).toLocaleDateString(undefined,
+        {day:"numeric", month:"short", year:"numeric"});
+      svg.appendChild(rd);
+    }
+  }
   const cross = el("line",{y1:M.t,y2:M.t+ih,stroke:"var(--ink)","stroke-width":1,opacity:0});
   svg.appendChild(cross);
   const tip = $("#tip");
@@ -817,8 +853,8 @@ function draw(){
   };
 }
 
-$("#h").oninput = e => $("#h-out").textContent = e.target.value;
-$("#c").oninput = e => $("#c-out").textContent = e.target.value;
+$("#h").oninput = e => { $("#h-out").textContent = e.target.value; updateCaps(); };
+$("#c").oninput = e => { $("#c-out").textContent = e.target.value; updateCaps(); };
 $("#h").onchange = run; $("#c").onchange = run; $("#bt").onchange = run;
 $("#bl").onchange = () => state.res && draw();
 $("#run").onclick = run;
