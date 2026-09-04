@@ -198,6 +198,7 @@ svg{display:block;width:100%;height:100%}
         <div class="cap" id="c-cap"></div>
       </div>
       <label class="check"><input type="checkbox" id="bt" checked> Hold out the horizon and score it</label>
+      <div class="cap" id="bt-cap"></div>
       <label class="check"><input type="checkbox" id="bl" checked> Show seasonal-naive baseline</label>
       <button class="run" id="run" disabled>Loading…</button>
       <div class="pair">
@@ -587,6 +588,10 @@ function updateCaps(){
     + ` · max ${state.cfg.window}, fixed by the export window`;
   $("#h-cap").textContent = `${$("#h").value} bars${span(+$("#h").value)}`
     + ` · max ${state.cfg.horizon}, fixed by the export`;
+  const held = +$("#h").value;
+  $("#bt-cap").textContent = $("#bt").checked
+    ? `on — model cut off ${held} bars${span(held)} back, then scored against what happened`
+    : `off — forecasts forward from the newest bar, so nothing to score against yet`;
 }
 
 const press = id => document.querySelectorAll(".chan")
@@ -618,6 +623,13 @@ async function select(id){
       + `${state.cfg.window}-bar context covers ${ctxYears.toFixed(1)} years. `
       + `Not investment advice.`;
   }
+  /* A live channel should predict forward from the newest bar. Hold-out exists
+     to score the model, and scoring requires cutting it off in the past, so the
+     two cannot both be true. Live starts forward, everything else starts scored,
+     and whatever you pick is remembered per channel. */
+  if(s.holdout === undefined) s.holdout = !s.live;
+  $("#bt").checked = s.holdout;
+
   const h = $("#h");
   h.max = Math.max(8, Math.min(state.cfg.horizon, Math.floor(s.n/3/8)*8));
   if(+h.value > +h.max){ h.value = h.max; $("#h-out").textContent = h.value; }
@@ -867,7 +879,11 @@ function draw(){
 
 $("#h").oninput = e => { $("#h-out").textContent = e.target.value; updateCaps(); };
 $("#c").oninput = e => { $("#c-out").textContent = e.target.value; updateCaps(); };
-$("#h").onchange = run; $("#c").onchange = run; $("#bt").onchange = run;
+$("#h").onchange = run; $("#c").onchange = run; $("#bt").onchange = () => {
+  const s = state.series.find(x => x.id === state.sel);
+  if(s) s.holdout = $("#bt").checked;
+  updateCaps(); run();
+};
 $("#bl").onchange = () => state.res && draw();
 $("#run").onclick = run;
 /* Native title= only changes the cursor on many setups and never renders the
