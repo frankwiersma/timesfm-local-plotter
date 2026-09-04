@@ -168,12 +168,38 @@ python scripts/export_onnx.py --out web/models-4096 --window 4096 --quantize int
 Then load it with `browser.html?models=models-4096`. The page reads the window
 from the export's `config.json` and adjusts its context slider to match.
 
+## Live price channels
+
+Bitcoin and Ethereum are fetched straight from a public exchange API in the
+browser — no key, no proxy, nothing server-side. The page tries Binance, Kraken,
+Coinbase and CoinGecko in order and uses whichever answers first, then names it
+in the channel description. If all four fail it says so and leaves the other
+channels working; exchange APIs are routinely blocked by ad blockers, corporate
+networks and regional restrictions.
+
+They are in here to demonstrate a limit, not to predict a price. A price series
+is close to a random walk, so the correct forecast is a nearly flat median with
+a fan that widens quickly — which is what the model produces:
+
+| | Bitcoin (hourly) | Random walk channel |
+| --- | --: | --: |
+| Skill vs naive | ~0% | −47% |
+| p10–p90 fan, first step → last | 331 → 3,237 | widening |
+
+A skill score near or below zero means the model cannot beat repeating the last
+value, which is the honest outcome. If the median ever looks confidently
+directional, that is the model reading noise as signal. **None of this is
+investment advice.**
+
 ## Limitations
 
 - Context is capped at the export window (512 by default, see above); the
   Python version handles 15,360.
 - Horizon is capped at the 256-step export.
 - Univariate only, no covariates.
+- The live price channels depend on third-party exchange APIs that the page
+  cannot control. Blocked requests are reported in the channel description
+  rather than failing silently.
 - The first forecast at a new horizon is slower while ORT specialises the graph.
 - `ort.env.wasm.wasmPaths` must be an absolute URL. ONNX Runtime `import()`s its
   `.mjs` helper, and a bare relative path like `"vendor/"` is not a valid module
