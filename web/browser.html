@@ -183,7 +183,8 @@ const $ = s => document.querySelector(s);
 const fmt = (v,d=2) => v==null||!isFinite(v) ? "—" :
   Math.abs(v)>=10000 ? v.toLocaleString(undefined,{maximumFractionDigits:0})
   : v.toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});
-const MODEL_DIR = "models/";
+// ?models=models-4096 switches to a different export (bigger context window)
+const MODEL_DIR = (new URLSearchParams(location.search).get("models") || "models") + "/";
 const state = {series:[], sel:null, cfg:null, sess:null, res:null, ep:"—"};
 
 function step(id, cls, detail){
@@ -290,6 +291,10 @@ async function boot(){
       <span>Weights <code>${file}</code></span>
       <span>Quantiles <code>p10 … p90</code></span>`
       + (state.rejected?.length ? `<span>Rejected <code>${state.rejected.join(" · ")}</code></span>` : "");
+    const cs = $("#c");
+    cs.max = state.cfg.window; cs.step = 32;
+    cs.value = state.cfg.window; $("#c-out").textContent = cs.value;
+    $("#h").max = state.cfg.horizon;
     $("#lamp").className = "lamp ready"; $("#lamp-t").textContent = "Ready";
     $("#run").disabled = false; $("#run").textContent = "Run forecast";
     $("#boot").classList.add("done");

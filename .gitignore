@@ -9,7 +9,8 @@ __pycache__/
 .idea/
 
 # exported model weights, produced by scripts/export_onnx.py
-web/models/
+# (any --out dir: web/models, web/models-4096, ...)
+web/models*/
 
 # vendored ONNX Runtime Web, fetched by scripts/fetch_runtime.sh
 web/vendor/

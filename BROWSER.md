@@ -115,27 +115,60 @@ automatically with no code change.
 
 ## What it costs
 
-Measured on an M4 Pro, 512-point context, 96-step horizon:
+Measured on an M4 Pro with `scripts/benchmark.py`, horizon 96, median of 7 runs.
+The ONNX exports use a fixed window, so **a short series still pays for the
+whole window** — that is the main thing to know before picking one.
 
-| | Desktop (fp32, MPS) | Browser (int8, WASM) |
+| Setup | Window | Latency |
 | --- | --: | --: |
-| grid-load sMAPE | 1.9% | 1.8% |
-| p10–p90 coverage | 92% | 97% |
-| Skill vs naive | +76% | +76% |
-| Latency | 60 ms | 338 ms |
-| Download | — | 353 MB, cached after first visit |
+| ONNX int8 · CPU (Python) | 512 | 21 ms |
+| ONNX fp32 · CPU (Python) | 512 | 22 ms |
+| PyTorch fp32 · MPS | — | 40 ms |
+| PyTorch fp32 · CPU | — | 63 ms |
+| ONNX int8 · CPU (Python) | 4096 | 85 ms |
+| PyTorch fp32 · MPS, 4096 ctx | — | 103 ms |
+| PyTorch fp32 · CPU, 4096 ctx | — | 139 ms |
+| **Browser · WASM int8** | **512** | **336 ms** |
+| **Browser · WASM int8** | **4096** | **1757 ms** |
 
-Roughly 5× slower, with accuracy intact. WASM runs single-threaded here:
-multi-threading needs COOP/COEP headers, which the demo server does not set
-because they would block the CDN script tag.
+Two things stand out. ONNX on CPU is about 3× faster than the PyTorch path it
+replaces (21 ms vs 63 ms), so the export is not the bottleneck — the browser is,
+costing roughly 16× the same graph run natively, single-threaded.
 
-The weights are cached with the Cache API keyed on file size, so a re-export
-invalidates it and a reload is instant.
+## Choosing a window
+
+`--window` is the real decision. Both exports hold the same 330.7M parameters
+and differ only in how much context the graph can accept.
+
+| | `--window 512` | `--window 4096` |
+| --- | --: | --: |
+| Weights | 353 MB | 366 MB |
+| Latency in-tab | 336 ms | 1757 ms |
+| grid-load sMAPE | 1.83% | **1.71%** |
+| p10–p90 coverage | 97% | 95% |
+| Skill vs naive | +76.0% | **+78.2%** |
+
+The larger window buys a real but small accuracy gain for 5.2× the latency, and
+you pay that latency on every forecast whether or not the series has the history
+to fill it. 512 is the better default; reach for 4096 when the extra context
+genuinely exists.
+
+Worth being precise about that gain: grid-load only carries 1,584 points of
+usable history, so a 4096 window is mostly padding even at its best. The
+improvement came from raising context 512 → 1,584, not from reaching 4096. None
+of the bundled channels are long enough to fill the window.
+
+```bash
+python scripts/export_onnx.py --out web/models-4096 --window 4096 --quantize int8
+```
+
+Then load it with `browser.html?models=models-4096`. The page reads the window
+from the export's `config.json` and adjusts its context slider to match.
 
 ## Limitations
 
-- Context is capped at the 512-point export window; the Python version handles
-  15,360.
+- Context is capped at the export window (512 by default, see above); the
+  Python version handles 15,360.
 - Horizon is capped at the 256-step export.
 - Univariate only, no covariates.
 - The first forecast at a new horizon is slower while ORT specialises the graph.

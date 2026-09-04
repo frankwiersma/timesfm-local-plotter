@@ -157,8 +157,8 @@ def main() -> None:
         #     coverage from 92% to 30%, because the quantile spread is produced
         #     almost entirely there. Excluding four nodes costs 17 MB and
         #     restores coverage to 95%.
-        graph = onnx.load(str(target)).graph
-        head = [n.name for n in graph.node if n.op_type in ("MatMul", "Gemm")][-4:]
+        exported = onnx.load(str(target)).graph
+        head = [n.name for n in exported.node if n.op_type in ("MatMul", "Gemm")][-4:]
         print(f"quantizing to int8, keeping the output head in fp32: {head}")
         quantize_dynamic(str(target), str(quantized), weight_type=QuantType.QInt8,
                          per_channel=True, reduce_range=True, nodes_to_exclude=head)
