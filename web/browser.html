@@ -53,6 +53,7 @@ button,input,select{font:inherit;color:inherit}
 .tag{font-family:var(--cond);text-transform:uppercase;letter-spacing:.09em;font-size:9px;padding:1px 4px;border:1px solid var(--ink-3);color:var(--ink-2);flex:none;line-height:1.5}
 .tag.real{background:var(--trace);border-color:var(--trace);color:var(--paper)}
 .tag.live{background:var(--pen);border-color:var(--pen);color:var(--paper)}
+.tag.cbs{background:var(--ok);border-color:var(--ok);color:var(--paper)}
 .tag.live::before{content:"";display:inline-block;width:4px;height:4px;border-radius:50%;background:var(--paper);margin-right:4px;vertical-align:middle;animation:blip 1.6s ease-in-out infinite}
 @keyframes blip{0%,100%{opacity:1}50%{opacity:.2}}
 .chan-meta{display:flex;align-items:center;gap:8px;margin-top:4px}
@@ -304,6 +305,7 @@ const TAG_HELP = {
   real:      "Real recorded data, not generated.",
   synthetic: "Generated from a fixed seed, so results reproduce exactly.",
   live:      "Fetched from a public exchange API in your browser, right now.",
+  cbs:       "Official Dutch statistics, fetched live from CBS StatLine open data.",
 };
 
 /* Live price channels. Fetched straight from the exchange in the browser, so
@@ -330,6 +332,56 @@ const LIVE = [
    Sources that only offer daily bars are resampled to 3d client-side. */
 const TARGET_STEP_DAYS = 3;
 const BARS_WANTED = 700;          // 512 context + hold-out, with room to spare
+
+/* CBS StatLine, the Dutch national statistics office. Open OData, no key, and
+   it answers with Access-Control-Allow-Origin: *, so the browser can read it
+   directly. Monthly official statistics are exactly what TimesFM is good at:
+   long, stable, strongly seasonal. Periods arrive as "2015MM01". */
+const CBS_BASE = "https://opendata.cbs.nl/ODataApi/odata";
+const CBS = [
+  {id:"nl-gas", name:"Aardgasverbruik NL", table:"86103NED",
+   measure:"TotaalVerbruik_25", unit:"mln m3", extra:"",
+   difficulty:"easy",
+   blurb:"Dutch national gas consumption from CBS StatLine. Winter runs about "
+       + "2.3x summer — the strongest seasonal signal in the set, and the regime "
+       + "these models handle best."},
+  {id:"nl-power", name:"Elektriciteitsverbruik NL", table:"84575NED",
+   measure:"NettoVerbruikBerekend_30", unit:"mln kWh", extra:"",
+   difficulty:"medium",
+   blurb:"Dutch net electricity consumption from CBS StatLine, monthly since "
+       + "1976. A mild annual cycle riding on five decades of trend, so the "
+       + "model has to track both at once."},
+  {id:"nl-schiphol", name:"Schiphol passagiers", table:"37478hvv",
+   measure:"TotaalAantalPassagiers_12", unit:"passengers",
+   extra:"%20and%20Luchthavens%20eq%20'A043590'",
+   difficulty:"medium",
+   blurb:"Monthly passengers through Amsterdam Schiphol from CBS StatLine. "
+       + "Strong summer peaks, and a crater in 2020 that no amount of seasonality "
+       + "explains — a fair test of whether a shock throws the forecast off."},
+];
+
+async function loadCbs(s){
+  if(s.values) return s;
+  const url = `${CBS_BASE}/${s.table}/TypedDataSet?$format=json`
+            + `&$select=Perioden,${s.measure}`
+            + `&$filter=substringof('MM',Perioden)${s.extra}`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error(`CBS StatLine returned HTTP ${res.status}`);
+  const rows = (await res.json()).value || [];
+  const values = [], times = [];
+  for(const r of rows){
+    const v = r[s.measure], p = r.Perioden;
+    if(v == null || !/^\d{4}MM\d{2}$/.test(p)) continue;
+    values.push(+v);
+    times.push(Date.UTC(+p.slice(0,4), +p.slice(6,8) - 1, 1));
+  }
+  if(values.length < 60) throw new Error(`only ${values.length} months returned`);
+  s.values = values; s.times = times; s.n = values.length;
+  s.step = {kind:"month", n:1};
+  s.years = values.length / 12;
+  s.source = "CBS StatLine"; s.fetchedAt = new Date();
+  return s;
+}
 
 const PRICE_SOURCES = [
   {name:"Binance",   // native 3d candles, 1000-candle cap
@@ -369,6 +421,16 @@ function resample(d, targetDays){
   return {closes, times, stepDays: d.stepDays * factor};
 }
 
+/* Months are not a fixed number of milliseconds, so extrapolating a monthly
+   axis with a constant step drifts badly over a few hundred points. */
+function advance(time, k, step){
+  if(step.kind === "month"){
+    const d = new Date(time);
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + k * step.n, 1);
+  }
+  return time + k * step.ms;
+}
+
 async function loadLive(s){
   if(s.values) return s;
   const failures = [];
@@ -387,6 +449,7 @@ async function loadLive(s){
       if(years < 0.75) throw new Error(`only ${years.toFixed(1)}y of history`);
       s.values = d.closes; s.n = d.closes.length;
       s.times = d.times; s.stepDays = d.stepDays; s.stepMs = d.stepDays * 864e5;
+      s.step = {kind:"ms", ms: d.stepDays * 864e5};
       s.years = years; s.source = src.name; s.fetchedAt = new Date();
       return s;
     }catch(e){ failures.push(`${src.name} (${e.message})`); }
@@ -476,8 +539,11 @@ async function boot(){
 
     step("series","on");
     state.series = (await (await fetch("demo-series.json")).json()).series
+      .concat(CBS.map(x => ({...x, freq:"monthly", real:true, cbs:true,
+                             period:12, defaultHorizon:24})))
       .concat(LIVE.map(x => ({...x})));
-    step("series","done", `${state.series.length} channels · ${LIVE.length} live`);
+    step("series","done",
+      `${state.series.length} channels · ${CBS.length} CBS · ${LIVE.length} live`);
 
     step("weights","on");
     // deploy.json is written by scripts/deploy_r2.py and points at the bucket.
@@ -560,7 +626,7 @@ function renderChannels(){
     const d = DIFFICULTY[s.difficulty] || DIFFICULTY.easy;
     const lv = d.level;
     const bars = [1,2,3,4,5].map(i => `<i class="${i<=lv?"on":""} ${lv>=4&&i<=lv?"max":""}"></i>`).join("");
-    const kind = s.live ? "live" : s.real ? "real" : "synthetic";
+    const kind = s.cbs ? "cbs" : s.live ? "live" : s.real ? "real" : "synthetic";
     const tag = `<span class="tag ${kind}" data-tip-title="${kind}" `
               + `data-tip="${TAG_HELP[kind]}" aria-label="${TAG_HELP[kind]}">${kind}</span>`;
     const count = s.n ? `${s.n.toLocaleString()} × ${s.freq}` : `${s.freq} · not loaded`;
@@ -604,15 +670,22 @@ async function select(id){
   $("#title").textContent = s.name;
   $("#blurb").textContent = s.blurb;
 
-  if(s.live && !s.values){
-    $("#blurb").textContent = "Fetching live prices from the exchange…";
+  if((s.live || s.cbs) && !s.values){
+    $("#blurb").textContent = s.cbs
+      ? "Fetching from CBS StatLine…" : "Fetching live prices from the exchange…";
     try{
-      await loadLive(s);
+      await (s.cbs ? loadCbs(s) : loadLive(s));
       renderChannels(); press(id);
     }catch(e){
       $("#blurb").innerHTML = `<span class="err">${e.message}</span>`;
       return false;
     }
+  }
+  if(s.cbs){
+    const last = new Date(s.times.at(-1)).toLocaleDateString(undefined,
+      {month:"long", year:"numeric", timeZone:"UTC"});
+    $("#blurb").textContent = `${s.blurb}  ·  ${s.n} monthly observations `
+      + `(${s.years.toFixed(0)} years) from CBS StatLine, through ${last}.`;
   }
   if(s.live){
     const when = s.fetchedAt.toLocaleString(undefined,
@@ -632,6 +705,13 @@ async function select(id){
 
   const h = $("#h");
   h.max = Math.max(8, Math.min(state.cfg.horizon, Math.floor(s.n/3/8)*8));
+  // Two years reads naturally on a monthly series; the generic default of 96
+  // steps would withhold eight years of it.
+  if(s.defaultHorizon && !s.horizonSet){
+    s.horizonSet = true;
+    h.value = Math.min(s.defaultHorizon, +h.max);
+    $("#h-out").textContent = h.value;
+  }
   if(+h.value > +h.max){ h.value = h.max; $("#h-out").textContent = h.value; }
   updateCaps();
   return true;
@@ -680,11 +760,22 @@ async function run(){
       for(let k = 0; k < 9; k++) quantiles[(0.1*(k+1)).toFixed(1)].push(q[t*9 + k]);
     }
     const baseline = seasonalNaive(ctx, horizon, s.period);
-    // absolute time of ctx[0], so the chart can label a real date axis
+    // Real timestamps where they exist, extrapolated only beyond the data, so a
+    // monthly axis stays on calendar months instead of drifting.
     const ctxStart = history.length - used;
+    let axisTimes = null;
+    if(s.times && s.step){
+      axisTimes = [];
+      const lastIdx = s.times.length - 1;
+      for(let i = 0; i < used + horizon; i++){
+        const idx = ctxStart + i;
+        axisTimes.push(idx <= lastIdx ? s.times[idx]
+          : advance(s.times[lastIdx], idx - lastIdx, s.step));
+      }
+    }
     state.res = {context:ctx, forecast, quantiles, actual, baseline,
                  timing_ms:ms, horizon, context_used:used,
-                 t0: s.times ? s.times[ctxStart] : null, stepMs: s.stepMs || null,
+                 axisTimes,
                  metrics: actual ? metrics(actual, forecast, quantiles, baseline) : null};
     draw(); readout();
   }catch(e){
@@ -760,8 +851,6 @@ function draw(){
   const r = state.res, wrap = $("#wrap"), svg = $("#svg");
   const W = wrap.clientWidth, H = wrap.clientHeight;
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.innerHTML = "";
-  const M = {t:14,r:16,b:26,l:62}, iw = W-M.l-M.r, ih = H-M.t-M.b;
-  if(iw <= 0 || ih <= 0) return;
   const ctx = r.context, fore = r.forecast, act = r.actual, base = r.baseline;
   const nC = ctx.length, nF = fore.length;
   const show = Math.min(nC, Math.max(nF*2, 96));
@@ -773,22 +862,30 @@ function draw(){
   fore.forEach(bump); if(act) act.forEach(bump);
   if($("#bl").checked && base) base.forEach(bump);
   const pad = (hi-lo)*0.08 || 1; lo -= pad; hi += pad;
+
+  const fmtTick = v => Math.abs(v) >= 1000
+    ? Math.round(v).toLocaleString() : String(+v.toFixed(2));
+  const ticks = niceTicks(lo, hi);
+  const widest = Math.max(...ticks.map(v => fmtTick(v).length));
+  // ~6.3px per glyph at 10.5px mono, plus room for the tick gap
+  const M = {t:14, r:16, b:26, l: Math.max(46, Math.round(widest*6.3) + 18)};
+  const iw = W-M.l-M.r, ih = H-M.t-M.b;
+  if(iw <= 0 || ih <= 0) return;
   const X = i => M.l + (i/(total-1))*iw, Y = v => M.t+ih-((v-lo)/(hi-lo))*ih;
   const xNow = X(show-1);
   const g = el("g"); svg.appendChild(g);
-  const ticks = niceTicks(lo,hi), minor = (ticks[1]-ticks[0])/5;
+  const minor = (ticks[1]-ticks[0])/5;
   for(let v=ticks[0]-minor*5; v<=hi; v+=minor)
     if(v>=lo) g.appendChild(el("line",{x1:M.l,x2:W-M.r,y1:Y(v),y2:Y(v),stroke:"var(--grid-fine)","stroke-width":1}));
   ticks.forEach(v => {
     g.appendChild(el("line",{x1:M.l,x2:W-M.r,y1:Y(v),y2:Y(v),stroke:"var(--grid)","stroke-width":1}));
     const t = el("text",{x:M.l-9,y:Y(v)+4,"text-anchor":"end",fill:"var(--ink-3)","font-family":"var(--mono)","font-size":"10.5"});
-    t.textContent = Math.abs(v)>=1000 ? Math.round(v).toLocaleString() : (+v.toFixed(2));
+    t.textContent = fmtTick(v);
     g.appendChild(t);
   });
-  const dated = r.t0 != null && r.stepMs;
-  // index i on the chart is full-series index (start + i)
-  const timeAt = i => r.t0 + (start + i) * r.stepMs;
-  const spanMs = dated ? total * r.stepMs : 0;
+  const dated = !!r.axisTimes;
+  const timeAt = i => r.axisTimes[start + i];
+  const spanMs = dated ? timeAt(total-1) - timeAt(0) : 0;
   const rawX = total/9, magX = Math.pow(10,Math.floor(Math.log10(rawX)));
   const xstep = [1,2,2.5,5,10].find(m => rawX/magX <= m)*magX;
   for(let k=Math.ceil(-(show-1)/xstep)*xstep; k<=nF; k+=xstep){
@@ -877,7 +974,11 @@ function draw(){
   };
 }
 
-$("#h").oninput = e => { $("#h-out").textContent = e.target.value; updateCaps(); };
+$("#h").oninput = e => {
+  $("#h-out").textContent = e.target.value; updateCaps();
+  const s = state.series.find(x => x.id === state.sel);
+  if(s) s.horizonSet = true;          // respect a manual change from then on
+};
 $("#c").oninput = e => { $("#c-out").textContent = e.target.value; updateCaps(); };
 $("#h").onchange = run; $("#c").onchange = run; $("#bt").onchange = () => {
   const s = state.series.find(x => x.id === state.sel);
