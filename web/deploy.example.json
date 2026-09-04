@@ -1,0 +1,16 @@
+{
+  "_comment": "Written by scripts/deploy_r2.py — do not edit by hand. Copied here as a reference for what the page expects. Without a real deploy.json the page falls back to local paths (web/models, web/vendor).",
+  "modelBase": "https://pub-<your-bucket-hash>.r2.dev/models/",
+  "wasmBase": "https://pub-<your-bucket-hash>.r2.dev/vendor/",
+  "shards": [
+    "timesfm3-decode-int8.onnx.00",
+    "timesfm3-decode-int8.onnx.01",
+    "timesfm3-decode-int8.onnx.02",
+    "timesfm3-decode-int8.onnx.03"
+  ],
+  "bytes": 353299102,
+  "window": 512,
+  "horizon": 256,
+  "quantiles": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+  "median_index": 4
+}

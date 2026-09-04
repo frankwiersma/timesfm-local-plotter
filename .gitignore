@@ -8,11 +8,19 @@ __pycache__/
 .vscode/
 .idea/
 
+# wrangler's local cache — contains the account id and login email
+.wrangler/
+
 # exported model weights, produced by scripts/export_onnx.py
 # (any --out dir: web/models, web/models-4096, ...)
 web/models*/
 
 # vendored ONNX Runtime Web, fetched by scripts/fetch_runtime.sh
 web/vendor/
+
+# deploy artefacts: web/deploy.json is written by scripts/deploy_r2.py and
+# points at your own bucket; dist/ is rebuilt by scripts/build_pages.py
+web/deploy.json
+dist/
 
 .DS_Store

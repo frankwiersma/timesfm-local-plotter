@@ -5,6 +5,9 @@ plotter, same demo channels, no server doing the forecasting.
 
 ![The plotter running TimesFM 3.0 entirely client-side](docs/screenshot-browser.png)
 
+**Live:** <https://timesfm-plotter.pages.dev> — hosted free on Cloudflare Pages
++ R2, see [DEPLOY.md](DEPLOY.md).
+
 ## First, the thing that does not work
 
 **Transformers.js cannot run TimesFM.** It has no TimesFM architecture — its

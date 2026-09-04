@@ -12,8 +12,9 @@ earning its keep.
 
 > **Running it in the browser instead?** The `browser-inference` branch exports
 > the model to ONNX and runs it client-side with ONNX Runtime Web — no Python at
-> inference time. See [BROWSER.md](BROWSER.md), including why Transformers.js
-> cannot do this.
+> inference time. Live at <https://timesfm-plotter.pages.dev>. See
+> [BROWSER.md](BROWSER.md) for how the export works and why Transformers.js
+> cannot do this, and [DEPLOY.md](DEPLOY.md) for hosting it free on Cloudflare.
 
 ## Why this exists
 

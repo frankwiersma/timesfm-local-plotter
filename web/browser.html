@@ -195,32 +195,49 @@ function step(id, cls, detail){
 const bar = p => $("#bar").style.width = (p*100).toFixed(1) + "%";
 
 /* Stream the weights so the progress bar reflects reality, and keep them in the
-   Cache API so a reload is instant rather than another few hundred megabytes. */
-async function fetchWeights(url, key, onProgress){
+   Cache API so a reload is instant rather than another few hundred megabytes.
+   Weights may be sharded: wrangler refuses uploads over 300 MiB, and fetching
+   the parts concurrently is faster than one long transfer anyway. */
+async function fetchWeights(urls, onProgress){
   let cache = null;
-  try{ cache = await caches.open("timesfm-onnx-" + key); }catch{}
-  if(cache){
-    const hit = await cache.match(url);
-    if(hit){ onProgress(1, null, true); return await hit.arrayBuffer(); }
-  }
-  const res = await fetch(url);
-  if(!res.ok) throw new Error(`could not fetch ${url} (HTTP ${res.status})`);
-  const total = +res.headers.get("content-length") || 0;
-  const reader = res.body.getReader();
-  const chunks = []; let got = 0;
-  for(;;){
-    const {done, value} = await reader.read();
-    if(done) break;
-    chunks.push(value); got += value.length;
-    onProgress(total ? got/total : 0, got, false);
-  }
-  const blob = new Blob(chunks);
-  if(cache){ try{ await cache.put(url, new Response(blob)); }catch{} }
-  return await blob.arrayBuffer();
+  try{ cache = await caches.open("timesfm-onnx-v2"); }catch{}
+  const got = new Array(urls.length).fill(0);
+  const totals = new Array(urls.length).fill(0);
+  const tick = () => onProgress(got.reduce((a,b)=>a+b,0), totals.reduce((a,b)=>a+b,0));
+
+  const parts = await Promise.all(urls.map(async (url, i) => {
+    if(cache){
+      const hit = await cache.match(url);
+      if(hit){
+        const buf = await hit.arrayBuffer();
+        got[i] = totals[i] = buf.byteLength; tick();
+        return new Uint8Array(buf);
+      }
+    }
+    const res = await fetch(url);
+    if(!res.ok) throw new Error(`could not fetch ${url} (HTTP ${res.status})`);
+    totals[i] = +res.headers.get("content-length") || 0; tick();
+    const reader = res.body.getReader();
+    const chunks = [];
+    for(;;){
+      const {done, value} = await reader.read();
+      if(done) break;
+      chunks.push(value); got[i] += value.length; tick();
+    }
+    const blob = new Blob(chunks);
+    if(cache){ try{ await cache.put(url, new Response(blob)); }catch{} }
+    return new Uint8Array(await blob.arrayBuffer());
+  }));
+
+  const size = parts.reduce((a,p) => a + p.byteLength, 0);
+  const joined = new Uint8Array(size);
+  let off = 0;
+  for(const p of parts){ joined.set(p, off); off += p.byteLength; }
+  return joined;
 }
 
 async function makeSession(buf, ep){
-  const sess = await ort.InferenceSession.create(new Uint8Array(buf), {
+  const sess = await ort.InferenceSession.create(buf, {
     executionProviders:[ep], graphOptimizationLevel:"all"});
   const W = state.cfg.window;
   const probe = new Float32Array(W);
@@ -253,15 +270,32 @@ async function boot(){
     step("series","done", state.series.length + " channels");
 
     step("weights","on");
-    state.cfg = await (await fetch(MODEL_DIR + "config.json")).json();
-    const file = state.cfg.file || "timesfm3-decode-int8.onnx";
-    const buf = await fetchWeights(MODEL_DIR + file, `${file}-${state.cfg.bytes || 0}`,
-      (frac, bytes, cached) => {
-      bar(frac);
-      $("#d-weights").textContent = cached ? "from cache"
-        : bytes ? `${(bytes/1e6).toFixed(0)} MB` : "…";
+    // deploy.json is written by scripts/deploy_r2.py and points at the bucket.
+    // Without it the page falls back to local paths, so dev is unaffected.
+    let deploy = null;
+    try{
+      const r = await fetch("deploy.json");
+      if(r.ok) deploy = await r.json();
+    }catch{}
+    const override = new URLSearchParams(location.search).get("models");
+    let urls;
+    if(deploy && !override){
+      state.cfg = deploy;
+      state.origin = "R2";
+      urls = deploy.shards.map(n => deploy.modelBase + n);
+      ort.env.wasm.wasmPaths = deploy.wasmBase;
+    }else{
+      const dir = (override || "models") + "/";
+      state.cfg = await (await fetch(dir + "config.json")).json();
+      state.origin = "local";
+      urls = [dir + state.cfg.file];
+    }
+    const buf = await fetchWeights(urls, (bytes, total) => {
+      bar(total ? bytes/total : 0);
+      $("#d-weights").textContent = `${(bytes/1e6).toFixed(0)} MB`
+        + (urls.length > 1 ? ` · ${urls.length} shards` : "");
     });
-    step("weights","done", `${(buf.byteLength/1e6).toFixed(0)} MB · int8`);
+    step("weights","done", `${(buf.byteLength/1e6).toFixed(0)} MB · int8 · ${state.origin}`);
 
     step("session","on"); bar(1);
     const forced = new URLSearchParams(location.search).get("ep");
@@ -286,9 +320,10 @@ async function boot(){
       ["window", state.cfg.window],
       ["max horizon", state.cfg.horizon],
       ["threads", ort.env.wasm.numThreads || 1],
+      ["assets", state.origin],
     ].map(([k,v]) => `<div><span>${k}</span><b>${v}</b></div>`).join("");
     $("#foot").innerHTML = `<span>Runs entirely client side — no forecast leaves this tab.</span>
-      <span>Weights <code>${file}</code></span>
+      <span>Weights <code>${(state.cfg.file || "sharded")}</code></span>
       <span>Quantiles <code>p10 … p90</code></span>`
       + (state.rejected?.length ? `<span>Rejected <code>${state.rejected.join(" · ")}</code></span>` : "");
     const cs = $("#c");
